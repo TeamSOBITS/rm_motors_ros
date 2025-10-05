@@ -2,8 +2,10 @@
 #define RM_MOTORS_HW__RM_MOTORS_HW_HPP_
 
 #include <vector>
+#include <map>
 
 #include <rm_motors_can.hpp>
+#include <rm_motors_hw/rm_motors_velocity_pid.hpp> // PID class
 
 #include "hardware_interface/system_interface.hpp"
 #include "hardware_interface/types/hardware_interface_type_values.hpp"
@@ -46,6 +48,9 @@ private:
   std::vector<std::vector<double>> hw_states_;
   std::vector<uint> motor_ids_;
   std::vector<double> position_offsets_;
+
+  // PID controllers for velocity control mode
+  std::map<uint, rm_motors_hw::RMVelocityPIDController> velocity_pid_controllers_;
 };
 
 }  // namespace rm_motors_hw
