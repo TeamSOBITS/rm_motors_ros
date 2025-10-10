@@ -270,7 +270,7 @@ hardware_interface::return_type RmMotorsSystemHardware::read(
       hw_states_[i][0] += hw_states_[i][0] < -1.0*M_PI ? 2.0*M_PI : 0.0; // account for position_offset shifting the output range
       hw_states_[i][0] -= hw_states_[i][0] >  1.0*M_PI ? 2.0*M_PI : 0.0;
       // Velocity reading (rad/s)
-      hw_states_[i][1] = rm_motors_can::get_state(gmc_, motor_ids_[i], rm_motors_can::FbField::Velocity);
+      hw_states_[i][1] = rm_motors_can::get_state(gmc_, motor_ids_[i], rm_motors_can::FbField::Velocity) / 19; // apply gearbox reduction
       // Effort (current) reading: convert from motor current (Amps) to torque (Nm)
       hw_states_[i][2] = rm_motors_can::get_state(gmc_, motor_ids_[i], rm_motors_can::FbField::Current) * rm_motors_can::nm_per_a(motor_types_[i]);
       // Temperature reading (Celsius)
@@ -288,7 +288,7 @@ hardware_interface::return_type RmMotorsSystemHardware::write(
 {
   for (uint i = 0; i < hw_commands_.size(); i++)
   {
-    int16_t raw_command = 0;
+    double raw_command = 0;
 
     if (command_modes_[i] == rm_motors_can::CmdMode::Velocity)
     {
@@ -297,7 +297,7 @@ hardware_interface::return_type RmMotorsSystemHardware::write(
       double measured_vel = hw_states_[i][1];
 
       // Calculate the required torque (in Nm) using the PID controller
-      double raw_command = velocity_pid_controllers_.at(i).calculate_target_torque(
+      raw_command = velocity_pid_controllers_.at(i).calculate_target_torque(
           target_vel,
           measured_vel,
           period.seconds());
