@@ -6,7 +6,7 @@
 
 namespace rm_motors_hw
 {
-hardware_interface::CallbackReturn RmMotorsSystemHardware::on_init(const hardware_interface::HardwareInfo & info)
+hardware_interface::CallbackReturn RmMotorsSystemHardware::on_init(const hardware_interface::HardwareComponentInterfaceParams & info)
 {
   if (hardware_interface::SystemInterface::on_init(info) != hardware_interface::CallbackReturn::SUCCESS)
     return hardware_interface::CallbackReturn::ERROR;
