@@ -2,6 +2,7 @@
 
 echo "╔══╣ Setup: RM Motors ROS (STARTING) ╠══╗"
 
+CRT_DIR=`pwd`
 
 # Install RUST
 # - Reference: https://www.rust-lang.org/tools/install
@@ -12,6 +13,10 @@ curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
 echo "source $HOME/.cargo/env" >> ~/.bashrc
 source $HOME/.bashrc
 
+cd rm_motors_hw/rm_motors_can
+cargo install cargo-expand
+cargo build --release
+cd $CRT_DIR
 
 # Setup CAN transport
 # - Reference: https://wiki.st.com/stm32mpu/wiki/How_to_set_up_a_SocketCAN_interface
