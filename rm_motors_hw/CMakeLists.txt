@@ -41,6 +41,7 @@ add_library(
   ${PROJECT_NAME}
   SHARED
   hardware/${PROJECT_NAME}.cpp
+  hardware/rm_motors_velocity_pid.cpp
 )
 
 target_compile_features(${PROJECT_NAME} PUBLIC cxx_std_17)

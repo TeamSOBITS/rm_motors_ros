@@ -1,8 +1,8 @@
 #include "rm_motors_hw/rm_motors_hw.hpp"
+#include "rm_motors_hw/rm_motors_velocity_pid.hpp" // Contains RMVelocityPIDController
 #include <rclcpp/rclcpp.hpp>
 #include <algorithm>    // std::sort, std::adjacent_find
-#include <map>
-#include <math.h> // M_PI
+#include <cmath> // For M_PI
 
 namespace rm_motors_hw
 {
@@ -129,6 +129,33 @@ hardware_interface::CallbackReturn RmMotorsSystemHardware::on_init(const hardwar
         return hardware_interface::CallbackReturn::ERROR;
       }
     }
+    
+    // --- PID Initialization Logic for ALL Current-Commanded Motors in Velocity Mode ---
+    if (command_modes_[i] == rm_motors_can::CmdMode::Velocity)
+    {            
+      try {
+        double kp = std::stod(joint.parameters.at("velocity_kp"));
+        double ki = std::stod(joint.parameters.at("velocity_ki"));
+        double kd = std::stod(joint.parameters.at("velocity_kd"));
+
+        // Initialize the generic PID controller
+        velocity_pid_controllers_.emplace(i, rm_motors_hw::RMVelocityPIDController(kp, ki, kd, 
+          rm_motors_can::nm_per_a(motor_types_[i]), 
+          rm_motors_can::i_max(motor_types_[i])));
+        
+        RCLCPP_INFO(rclcpp::get_logger("RmMotorsSystemHardware"), 
+          "Joint %s (%s) initialized for Velocity PID Control (Kp: %.2f, Ki: %.2f, Kd: %.2f)", 
+          joint.name.c_str(), 
+          joint.parameters.at("motor_type").c_str(),
+          kp, ki, kd);
+      } catch (const std::out_of_range& e) {
+        RCLCPP_FATAL(rclcpp::get_logger("RmMotorsSystemHardware"),
+          "Joint %s (%s in Velocity Mode) missing PID parameter (velocity_kp, velocity_ki, or velocity_kd).", 
+          joint.name.c_str(), joint.parameters.at("motor_type").c_str());
+        return hardware_interface::CallbackReturn::ERROR;
+      }
+    }
+    // --- END PID Initialization Logic ---
   }
 
   std::vector<uint> s = motor_ids_;
@@ -227,6 +254,7 @@ hardware_interface::return_type RmMotorsSystemHardware::read(
   RCLCPP_DEBUG(rclcpp::get_logger("RmMotorsSystemHardware"), "Reading...");
   if (!simulate_)
     rm_motors_can::run_once(gmc_);
+  
   // Iterate through all joints
   for (uint i = 0; i < hw_states_.size(); i++)
   {
@@ -237,13 +265,16 @@ hardware_interface::return_type RmMotorsSystemHardware::read(
       hw_states_[i][0] = hw_states_[i][0] + hw_states_[i][1]*0.5;                          // position
     }
     else{
-      // Apply position offset and convert from [0, 2pi] to [-pi, pi]
+      // Apply position offset and convert from [0, 2pi] to [-pi, pi] (rad)
       hw_states_[i][0] = rm_motors_can::get_state(gmc_, motor_ids_[i], rm_motors_can::FbField::Position) - position_offsets_[i] - M_PI;
       hw_states_[i][0] += hw_states_[i][0] < -1.0*M_PI ? 2.0*M_PI : 0.0; // account for position_offset shifting the output range
       hw_states_[i][0] -= hw_states_[i][0] >  1.0*M_PI ? 2.0*M_PI : 0.0;
-      hw_states_[i][1] = rm_motors_can::get_state(gmc_, motor_ids_[i], rm_motors_can::FbField::Velocity);
-      hw_states_[i][2] = rm_motors_can::get_state(gmc_, motor_ids_[i], rm_motors_can::FbField::Current)*rm_motors_can::nm_per_a(motor_types_[i]);
-      hw_states_[i][3] = rm_motors_can::get_state(gmc_, motor_ids_[i], rm_motors_can::FbField::Temperature);
+      // Velocity reading (rad/s)
+      hw_states_[i][1] = rm_motors_can::get_state(gmc_, motor_ids_[i], rm_motors_can::FbField::Velocity) / 19; // apply gearbox reduction
+      // Effort (current) reading: convert from motor current (Amps) to torque (Nm)
+      hw_states_[i][2] = rm_motors_can::get_state(gmc_, motor_ids_[i], rm_motors_can::FbField::Current) * rm_motors_can::nm_per_a(motor_types_[i]);
+      // Temperature reading (Celsius)
+      hw_states_[i][3] = rm_motors_can::get_state(gmc_, motor_ids_[i], rm_motors_can::FbField::Temperature); 
     }
   }
 
@@ -252,17 +283,37 @@ hardware_interface::return_type RmMotorsSystemHardware::read(
   return hardware_interface::return_type::OK;
 }
 
-hardware_interface::return_type RmMotorsSystemHardware::write(const rclcpp::Time & /*time*/, const rclcpp::Duration & /*period*/)
+hardware_interface::return_type RmMotorsSystemHardware::write(
+  const rclcpp::Time & /*time*/, const rclcpp::Duration & period)
 {
   for (uint i = 0; i < hw_commands_.size(); i++)
   {
-    RCLCPP_DEBUG(rclcpp::get_logger("RmMotorsSystemHardware"), "writing command %.5f for joint %d", hw_commands_[i], i);
+    double raw_command = 0;
 
-    if (simulate_){
-      ;
+    if (command_modes_[i] == rm_motors_can::CmdMode::Velocity)
+    {
+      // Velocity mode: requires conversion from target velocity (rad/s) to torque (Nm) via PID
+      double target_vel   = hw_commands_[i];
+      double measured_vel = hw_states_[i][1];
+
+      // Calculate the required torque (in Nm) using the PID controller
+      raw_command = velocity_pid_controllers_.at(i).calculate_target_torque(
+          target_vel,
+          measured_vel,
+          period.seconds());
+
+      RCLCPP_DEBUG(rclcpp::get_logger("RmMotorsSystemHardware"), 
+        "PID: Joint %s Target V(rad/s): %.2f, Meas V(rad/s): %.2f, Commanded T(Nm): %.2f", 
+        info_.joints[i].name.c_str(), target_vel, measured_vel, raw_command);
     }
-    else {
-      if(rm_motors_can::set_cmd(gmc_, motor_ids_[i], hw_commands_[i]) < 0){
+    else if (command_modes_[i] == rm_motors_can::CmdMode::Torque)
+    {
+      // Effort Mode: Any motor commanded in torque commands (Nm)
+      raw_command = hw_commands_[i];
+    }
+
+    if (!simulate_){
+      if(rm_motors_can::set_cmd(gmc_, motor_ids_[i], raw_command) < 0){
         RCLCPP_ERROR(rclcpp::get_logger("RmMotorsSystemHardware"), "Error in rm_motors_can::set_cmd");
         return hardware_interface::return_type::ERROR;
       }
