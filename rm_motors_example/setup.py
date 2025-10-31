@@ -20,7 +20,11 @@ setup(
     maintainer_email='matthewjforan@gmail.com',
     description='Demonstrator package for rm_motors_hw',
     license='MPL-2.0',
-    tests_require=['pytest'],
+    extras_require={
+        'test': [
+            'pytest',
+        ],
+    },
     entry_points={
         'console_scripts': [
         ],

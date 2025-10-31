@@ -6,10 +6,9 @@
 
 #include <rm_motors_can.hpp>
 #include <rm_motors_hw/rm_motors_velocity_pid.hpp> // PID class
-
+#include "rclcpp/macros.hpp"
 #include "hardware_interface/system_interface.hpp"
 #include "hardware_interface/types/hardware_interface_type_values.hpp"
-#include "rclcpp/macros.hpp"
 
 namespace rm_motors_hw
 {
@@ -19,7 +18,7 @@ class RmMotorsSystemHardware : public hardware_interface::SystemInterface
 public:
   RCLCPP_SHARED_PTR_DEFINITIONS(RmMotorsSystemHardware)
 
-  hardware_interface::CallbackReturn on_init(const hardware_interface::HardwareInfo & info) override;
+  hardware_interface::CallbackReturn on_init(const hardware_interface::HardwareComponentInterfaceParams & info) override;
 
   hardware_interface::CallbackReturn on_configure(const rclcpp_lifecycle::State & previous_state) override;
   
