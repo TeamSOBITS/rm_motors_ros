@@ -54,4 +54,11 @@ double RMVelocityPIDController::calculate_target_torque(
   return output_torque_nm;
 }
 
+void RMVelocityPIDController::reset()
+{
+  integral_error_ = 0.0;
+  previous_error_ = 0.0;
+}
+
+
 } // namespace rm_motors_hw

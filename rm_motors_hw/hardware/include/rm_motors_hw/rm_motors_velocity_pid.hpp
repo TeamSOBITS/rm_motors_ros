@@ -5,6 +5,7 @@
 #include <cstdint>
 #include <algorithm>
 #include <limits>
+#include <iostream>
 
 namespace rm_motors_hw
 {
@@ -35,6 +36,12 @@ public:
     double target_vel_rad_s,
     double measured_vel_rad_s,
     double delta_time_s);
+
+  /**
+   * @brief Resets the internal state of the PID controller (integral and derivative terms).
+   *
+   */
+  void reset();
 
 public:
   // PID Gains
