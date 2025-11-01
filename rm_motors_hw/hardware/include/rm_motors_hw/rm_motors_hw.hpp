@@ -3,6 +3,7 @@
 
 #include <vector>
 #include <map>
+#include <string> // JAZZY MIGRATION: Added for std::string
 
 #include <rm_motors_can.hpp>
 #include <rm_motors_hw/rm_motors_velocity_pid.hpp> // PID class
@@ -20,13 +21,13 @@ public:
 
   hardware_interface::CallbackReturn on_init(const hardware_interface::HardwareComponentInterfaceParams & info) override;
 
-  hardware_interface::CallbackReturn on_configure(const rclcpp_lifecycle::State & previous_state) override;
-  
-  hardware_interface::CallbackReturn on_cleanup(const rclcpp_lifecycle::State & previous_state) override;
-
   std::vector<hardware_interface::StateInterface> export_state_interfaces() override;
 
   std::vector<hardware_interface::CommandInterface> export_command_interfaces() override;
+
+  hardware_interface::CallbackReturn on_configure(const rclcpp_lifecycle::State & previous_state) override;
+  
+  hardware_interface::CallbackReturn on_cleanup(const rclcpp_lifecycle::State & previous_state) override;
 
   hardware_interface::CallbackReturn on_activate(const rclcpp_lifecycle::State & previous_state) override;
 
@@ -37,7 +38,8 @@ public:
   hardware_interface::return_type write(const rclcpp::Time & time, const rclcpp::Duration & period) override;
 
 private:
-  const char* can_interface_;
+  std::string can_interface_;
+
   bool simulate_;
   rm_motors_can::RmMotorsCan *gmc_;
   std::vector<const char*> state_interface_types_ = {hardware_interface::HW_IF_POSITION, hardware_interface::HW_IF_VELOCITY, hardware_interface::HW_IF_EFFORT, "temperature"};
@@ -47,9 +49,14 @@ private:
   std::vector<std::vector<double>> hw_states_;
   std::vector<uint> motor_ids_;
   std::vector<double> position_offsets_;
+  std::vector<double> gear_ratios_;
 
-  // PID controllers for velocity control mode
   std::map<uint, rm_motors_hw::RMVelocityPIDController> velocity_pid_controllers_;
+
+  // For position unwrapping
+  std::vector<double> prev_raw_pos_;
+  std::vector<double> unwrapped_rotor_pos_;
+  std::vector<bool> is_continuous_;
 };
 
 }  // namespace rm_motors_hw
