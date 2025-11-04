@@ -50,6 +50,7 @@ private:
   std::vector<uint> motor_ids_;
   std::vector<double> position_offsets_;
   std::vector<double> gear_ratios_;
+  std::vector<bool> invert_rotation_;
 
   std::map<uint, rm_motors_hw::RMVelocityPIDController> velocity_pid_controllers_;
 

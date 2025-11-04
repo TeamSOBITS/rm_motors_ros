@@ -56,6 +56,7 @@ hardware_interface::CallbackReturn RmMotorsSystemHardware::on_init(const hardwar
   prev_raw_pos_.resize(info_.joints.size(), std::numeric_limits<double>::quiet_NaN());
   unwrapped_rotor_pos_.resize(info_.joints.size(), 0.0);
   is_continuous_.resize(info_.joints.size());
+  invert_rotation_.resize(info_.joints.size());
   gear_ratios_.resize(info_.joints.size(), 1.0);
 
   size_t i = 0;
@@ -91,6 +92,8 @@ hardware_interface::CallbackReturn RmMotorsSystemHardware::on_init(const hardwar
         "Joint '%s' missing required parameter: 'motor_id'", joint.name.c_str());
       return hardware_interface::CallbackReturn::ERROR;
     }
+
+    
 
     // Gear Ratio (set automatically based on motor type)
     switch (motor_types_.back()) {
@@ -136,6 +139,18 @@ hardware_interface::CallbackReturn RmMotorsSystemHardware::on_init(const hardwar
       position_offsets_.emplace_back(0.0);
     }
 
+    // Invert Rotation
+    try{
+      invert_rotation_[i] = joint.parameters.at("invert_rotation") == "true";
+      if (invert_rotation_[i]) {
+        RCLCPP_INFO(rclcpp::get_logger("RmMotorsSystemHardware"), "Joint '%s' has inverted rotation.", joint.name.c_str());
+      }
+    }
+    catch (const std::out_of_range&){
+      RCLCPP_WARN(rclcpp::get_logger("RmMotorsSystemHardware"),
+        "Joint '%s' missing parameter 'invert_rotation'. Assuming false.", joint.name.c_str());
+      invert_rotation_[i] = false;
+    }
     std::map<std::string, rm_motors_can::CmdMode> cmd_mode_map {
       {hardware_interface::HW_IF_VELOCITY, rm_motors_can::CmdMode::Velocity},
       {hardware_interface::HW_IF_EFFORT, rm_motors_can::CmdMode::Torque}
@@ -336,11 +351,13 @@ hardware_interface::return_type RmMotorsSystemHardware::read(
         // Normalize to [-π, π] for non-continuous joints
         output_pos = std::fmod(output_pos + M_PI, 2.0 * M_PI) - M_PI;
       }
-      hw_states_[i][0] = output_pos;
+      hw_states_[i][0] = invert_rotation_[i] ? -output_pos : output_pos;
       // Velocity reading (rad/s)
-      hw_states_[i][1] = rm_motors_can::get_state(gmc_, motor_ids_[i], rm_motors_can::FbField::Velocity) / gear_ratios_[i];
+      double velocity = rm_motors_can::get_state(gmc_, motor_ids_[i], rm_motors_can::FbField::Velocity) / gear_ratios_[i];
+      hw_states_[i][1] = invert_rotation_[i] ? -velocity : velocity;
       // Effort (current) reading: convert from motor current (Amps) to torque (Nm)
-      hw_states_[i][2] = rm_motors_can::get_state(gmc_, motor_ids_[i], rm_motors_can::FbField::Current) * rm_motors_can::nm_per_a(motor_types_[i]);
+      double effort = rm_motors_can::get_state(gmc_, motor_ids_[i], rm_motors_can::FbField::Current) * rm_motors_can::nm_per_a(motor_types_[i]);
+      hw_states_[i][2] = invert_rotation_[i] ? -effort : effort;
       // Temperature reading (Celsius)
       hw_states_[i][3] = rm_motors_can::get_state(gmc_, motor_ids_[i], rm_motors_can::FbField::Temperature);
     }
@@ -361,12 +378,12 @@ hardware_interface::return_type RmMotorsSystemHardware::write(
     if (command_modes_[i] == rm_motors_can::CmdMode::Velocity)
     {
       // Velocity mode: requires conversion from target velocity (rad/s) to torque (Nm) via PID
-      double target_vel = hw_commands_[i];
+      double target_vel = invert_rotation_[i] ? -hw_commands_[i] : hw_commands_[i];
       double measured_vel = 0.0;
 
       // Safely fetch measured velocity if available
       if (hw_states_.size() > i && hw_states_[i].size() > 1 && !std::isnan(hw_states_[i][1])) {
-        measured_vel = hw_states_[i][1];
+        measured_vel = invert_rotation_[i] ? -hw_states_[i][1] : hw_states_[i][1];
       } else {
         RCLCPP_DEBUG(rclcpp::get_logger("RmMotorsSystemHardware"),
           "Measured velocity unavailable for joint index %zu; assuming 0.0", i);
@@ -398,7 +415,7 @@ hardware_interface::return_type RmMotorsSystemHardware::write(
     else if (command_modes_[i] == rm_motors_can::CmdMode::Torque)
     {
       // Effort Mode: Command is already in torque (Nm)
-      raw_command = hw_commands_[i];
+      raw_command = invert_rotation_[i] ? -hw_commands_[i] : hw_commands_[i];
     }
 
     if (!simulate_)
