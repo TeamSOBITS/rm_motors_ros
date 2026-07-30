@@ -59,6 +59,7 @@ hardware_interface::CallbackReturn RmMotorsSystemHardware::on_init(const hardwar
   invert_rotation_.resize(info_.joints.size());
   gear_ratios_.resize(info_.joints.size(), 1.0);
   feedback_stale_.resize(info_.joints.size(), false);
+  last_set_cmd_error_ns_.resize(info_.joints.size(), 0);
 
   size_t i = 0;
   for (const auto & joint : info_.joints)
@@ -516,8 +517,14 @@ hardware_interface::return_type RmMotorsSystemHardware::write(
       if(rm_motors_can::set_cmd(gmc_, motor_ids_[i], raw_command) < 0)
       {
         // Keep going so one failing motor (e.g. overload) doesn't drop the others.
-        RCLCPP_ERROR_THROTTLE(rclcpp::get_logger("RmMotorsSystemHardware"), steady_clock_, 1000,
-          "Error writing command for motor ID %u (commanding 0)", motor_ids_[i]);
+        // Throttled per motor (not RCLCPP_ERROR_THROTTLE's shared call-site clock) so
+        // one already-failing motor can't suppress another's first-ever error.
+        int64_t now_ns = steady_clock_.now().nanoseconds();
+        if (now_ns - last_set_cmd_error_ns_[i] >= 1000000000) {
+          RCLCPP_ERROR(rclcpp::get_logger("RmMotorsSystemHardware"),
+            "Error writing command for motor ID %u (commanding 0)", motor_ids_[i]);
+          last_set_cmd_error_ns_[i] = now_ns;
+        }
       }
     }
   }

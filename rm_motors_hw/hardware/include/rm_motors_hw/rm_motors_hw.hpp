@@ -64,6 +64,9 @@ private:
   std::vector<bool> feedback_stale_;
 
   rclcpp::Clock steady_clock_{RCL_STEADY_TIME};  // for throttled comm-failure logging
+
+  // Per-motor last set_cmd-error log time (ns, steady_clock_), for per-motor throttling
+  std::vector<int64_t> last_set_cmd_error_ns_;
 };
 
 }  // namespace rm_motors_hw
