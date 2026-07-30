@@ -8,6 +8,7 @@
 #include <rm_motors_can.hpp>
 #include <rm_motors_hw/rm_motors_velocity_pid.hpp> // PID class
 #include "rclcpp/macros.hpp"
+#include "rclcpp/clock.hpp"
 #include "hardware_interface/system_interface.hpp"
 #include "hardware_interface/types/hardware_interface_type_values.hpp"
 
@@ -58,6 +59,11 @@ private:
   std::vector<double> prev_raw_pos_;
   std::vector<double> unwrapped_rotor_pos_;
   std::vector<bool> is_continuous_;
+
+  // Per-motor "CAN feedback is stale" flag (set in read(), consumed in write())
+  std::vector<bool> feedback_stale_;
+
+  rclcpp::Clock steady_clock_{RCL_STEADY_TIME};  // for throttled comm-failure logging
 };
 
 }  // namespace rm_motors_hw

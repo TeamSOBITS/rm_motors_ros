@@ -58,6 +58,7 @@ hardware_interface::CallbackReturn RmMotorsSystemHardware::on_init(const hardwar
   is_continuous_.resize(info_.joints.size());
   invert_rotation_.resize(info_.joints.size());
   gear_ratios_.resize(info_.joints.size(), 1.0);
+  feedback_stale_.resize(info_.joints.size(), false);
 
   size_t i = 0;
   for (const auto & joint : info_.joints)
@@ -242,6 +243,11 @@ hardware_interface::CallbackReturn RmMotorsSystemHardware::on_configure(const rc
     std::fill(state_vec.begin(), state_vec.end(), 0.0);
   }
   std::fill(hw_commands_.begin(), hw_commands_.end(), 0.0);
+  // Reset unwrap/PID/staleness state so a reconfigure doesn't integrate a stale delta
+  std::fill(prev_raw_pos_.begin(), prev_raw_pos_.end(), std::numeric_limits<double>::quiet_NaN());
+  std::fill(unwrapped_rotor_pos_.begin(), unwrapped_rotor_pos_.end(), 0.0);
+  std::fill(feedback_stale_.begin(), feedback_stale_.end(), false);
+  for (auto & [idx, pid] : velocity_pid_controllers_) { pid.reset(); }
   if (!simulate_)
   {
     if (!(gmc_ = rm_motors_can::init_bus(can_interface_.c_str())))
@@ -322,8 +328,9 @@ std::vector<hardware_interface::CommandInterface> RmMotorsSystemHardware::export
 hardware_interface::CallbackReturn RmMotorsSystemHardware::on_activate(const rclcpp_lifecycle::State & /*previous_state*/)
 {
   RCLCPP_INFO(rclcpp::get_logger("RmMotorsSystemHardware"), "Activating hardware...");
-  // On activation, you might want to reset commands to current states
-  // For now, we just log and continue.
+  // Don't replay the pre-deactivation command or PID integral on reactivation.
+  std::fill(hw_commands_.begin(), hw_commands_.end(), 0.0);
+  for (auto & [idx, pid] : velocity_pid_controllers_) { pid.reset(); }
   RCLCPP_INFO(rclcpp::get_logger("RmMotorsSystemHardware"), "Hardware activated successfully.");
   return hardware_interface::CallbackReturn::SUCCESS;
 }
@@ -345,12 +352,17 @@ hardware_interface::CallbackReturn RmMotorsSystemHardware::on_deactivate(const r
 }
 
 hardware_interface::return_type RmMotorsSystemHardware::read(
-  const rclcpp::Time & /*time*/, const rclcpp::Duration & /*period*/)
+  const rclcpp::Time & /*time*/, const rclcpp::Duration & period)
 {
   RCLCPP_DEBUG(rclcpp::get_logger("RmMotorsSystemHardware"), "Reading...");
   if (!simulate_)
   {
-    rm_motors_can::run_once(gmc_);
+    // Receive-only: commands are transmitted once per cycle, in write().
+    if (rm_motors_can::rx_once(gmc_) < 0)
+    {
+      RCLCPP_WARN_THROTTLE(rclcpp::get_logger("RmMotorsSystemHardware"), steady_clock_, 1000,
+        "CAN rx failed in read(); motor states may be stale");
+    }
   }
   for (size_t i = 0; i < hw_states_.size(); i++)
   {
@@ -363,8 +375,41 @@ hardware_interface::return_type RmMotorsSystemHardware::read(
     }
     else
     {
+      // No fresh frames: the PID would integrate a frozen error and slam the motor
+      // once the bus recovers, so reset it and have write() command zero torque.
+      int64_t fb_age = rm_motors_can::fb_age_ms(gmc_, motor_ids_[i]);
+      bool stale = (fb_age < 0) || (fb_age > 150);
+      if (stale != feedback_stale_[i])
+      {
+        if (stale) {
+          RCLCPP_WARN(rclcpp::get_logger("RmMotorsSystemHardware"),
+            "Motor ID %u feedback is stale (age %ldms) — commanding zero torque", motor_ids_[i], fb_age);
+        } else {
+          RCLCPP_INFO(rclcpp::get_logger("RmMotorsSystemHardware"),
+            "Motor ID %u feedback recovered", motor_ids_[i]);
+        }
+        feedback_stale_[i] = stale;
+      }
+      if (stale)
+      {
+        auto pid_it = velocity_pid_controllers_.find(i);
+        if (pid_it != velocity_pid_controllers_.end()) { pid_it->second.reset(); }
+        // Unwrapping across an outage is meaningless — restart from the next fresh sample
+        prev_raw_pos_[i] = std::numeric_limits<double>::quiet_NaN();
+        continue;
+      }
+
+      // Velocity reading first: the rotor speed disambiguates the position unwrap below
+      double rotor_vel = rm_motors_can::get_state(gmc_, motor_ids_[i], rm_motors_can::FbField::Velocity); // rotor rad/s
       // Position reading with unwrapping and gear ratio adjustment (rad)
       double rotor_pos = rm_motors_can::get_state(gmc_, motor_ids_[i], rm_motors_can::FbField::Position);
+      // get_state returns NaN on error — keep the previous states for this joint
+      if (std::isnan(rotor_pos) || std::isnan(rotor_vel)) {
+        RCLCPP_WARN_THROTTLE(rclcpp::get_logger("RmMotorsSystemHardware"), steady_clock_, 1000,
+          "Invalid feedback for motor ID %u; keeping previous states", motor_ids_[i]);
+        prev_raw_pos_[i] = std::numeric_limits<double>::quiet_NaN();
+        continue;
+      }
       if (std::isnan(prev_raw_pos_[i])) {
         prev_raw_pos_[i] = rotor_pos;
         unwrapped_rotor_pos_[i] = rotor_pos;
@@ -372,22 +417,39 @@ hardware_interface::return_type RmMotorsSystemHardware::read(
       double delta = rotor_pos - prev_raw_pos_[i];
       while (delta > M_PI) delta -= 2.0 * M_PI;
       while (delta < -M_PI) delta += 2.0 * M_PI;
+      // ±π unwrap alone tracks < 1500 rotor rpm at 50 Hz; M3508 hits ~9000 rpm,
+      // so use the reported velocity to pick the correct 2π multiple.
+      double dt = period.seconds();
+      if (dt > 0.0 && dt < 1.0) {
+        double expected_delta = rotor_vel * dt;
+        delta += 2.0 * M_PI * std::round((expected_delta - delta) / (2.0 * M_PI));
+      }
       unwrapped_rotor_pos_[i] += delta;
       prev_raw_pos_[i] = rotor_pos;
-      double output_pos = unwrapped_rotor_pos_[i] / gear_ratios_[i] - position_offsets_[i];
+      // Invert before offset: position_offset is in the joint frame, so it must
+      // not flip sign with invert_rotation.
+      double output_pos = unwrapped_rotor_pos_[i] / gear_ratios_[i];
+      if (invert_rotation_[i]) { output_pos = -output_pos; }
+      output_pos -= position_offsets_[i];
       if (!is_continuous_[i]) {
-        // Normalize to [-π, π] for non-continuous joints
-        output_pos = std::fmod(output_pos + M_PI, 2.0 * M_PI) - M_PI;
+        // Normalize to [-π, π) — fmod is sign-preserving and wrong for negatives
+        output_pos = output_pos - 2.0 * M_PI * std::floor((output_pos + M_PI) / (2.0 * M_PI));
       }
-      hw_states_[i][0] = invert_rotation_[i] ? -output_pos : output_pos;
-      // Velocity reading (rad/s)
-      double velocity = rm_motors_can::get_state(gmc_, motor_ids_[i], rm_motors_can::FbField::Velocity) / gear_ratios_[i];
+      hw_states_[i][0] = output_pos;
+      // Velocity state (rad/s at the output shaft)
+      double velocity = rotor_vel / gear_ratios_[i];
       hw_states_[i][1] = invert_rotation_[i] ? -velocity : velocity;
-      // Effort (current) reading: convert from motor current (Amps) to torque (Nm)
-      double effort = rm_motors_can::get_state(gmc_, motor_ids_[i], rm_motors_can::FbField::Current) * rm_motors_can::nm_per_a(motor_types_[i]);
-      hw_states_[i][2] = invert_rotation_[i] ? -effort : effort;
+      // NaN = field unavailable (e.g. M2006 has no current/temperature feedback).
+      double current_a = rm_motors_can::get_state(gmc_, motor_ids_[i], rm_motors_can::FbField::Current);
+      if (!std::isnan(current_a)) {
+        double effort = current_a * rm_motors_can::nm_per_a(motor_types_[i]);
+        hw_states_[i][2] = invert_rotation_[i] ? -effort : effort;
+      }
       // Temperature reading (Celsius)
-      hw_states_[i][3] = rm_motors_can::get_state(gmc_, motor_ids_[i], rm_motors_can::FbField::Temperature);
+      double temperature = rm_motors_can::get_state(gmc_, motor_ids_[i], rm_motors_can::FbField::Temperature);
+      if (!std::isnan(temperature)) {
+        hw_states_[i][3] = temperature;
+      }
     }
   }
 
@@ -425,15 +487,15 @@ hardware_interface::return_type RmMotorsSystemHardware::write(
         return hardware_interface::return_type::ERROR;
       }
 
-      // If target velocity is zero, command zero torque and reset PID.
-      // Otherwise, calculate torque using the PID controller.
-      if (target_vel == 0.0)
+      // No feedback → no closed loop: command zero torque (PID was reset in read()).
+      if (!simulate_ && feedback_stale_[i])
       {
         raw_command = 0.0;
-        pid_it->second.reset();
       }
       else
       {
+        // Let the PID regulate to 0 too — the old target==0 special case freewheeled
+        // instead of holding zero velocity, and discarded the integral every stop.
         raw_command = pid_it->second.calculate_target_torque(
             target_vel,
             measured_vel,
@@ -450,14 +512,19 @@ hardware_interface::return_type RmMotorsSystemHardware::write(
     {
       if(rm_motors_can::set_cmd(gmc_, motor_ids_[i], raw_command) < 0)
       {
-        RCLCPP_ERROR(rclcpp::get_logger("RmMotorsSystemHardware"), "Error writing command for motor ID %u", motor_ids_[i]);
-        return hardware_interface::return_type::ERROR;
+        // Keep going so one failing motor (e.g. overload) doesn't drop the others.
+        RCLCPP_ERROR_THROTTLE(rclcpp::get_logger("RmMotorsSystemHardware"), steady_clock_, 1000,
+          "Error writing command for motor ID %u (commanding 0)", motor_ids_[i]);
       }
     }
   }
   if (!simulate_)
   {
-    rm_motors_can::run_once(gmc_);
+    if (rm_motors_can::run_once(gmc_) < 0)
+    {
+      RCLCPP_WARN_THROTTLE(rclcpp::get_logger("RmMotorsSystemHardware"), steady_clock_, 1000,
+        "CAN run_once failed in write(); commands may not have been transmitted");
+    }
   }
   return hardware_interface::return_type::OK;
 }
