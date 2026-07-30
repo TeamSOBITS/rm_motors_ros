@@ -79,13 +79,16 @@ hardware_interface::CallbackReturn RmMotorsSystemHardware::on_init(const hardwar
 
     // Motor ID
     try{
-      uint id = std::stoi(joint.parameters.at("motor_id"));
-      if (id < 1 || id > 8 || (motor_types_.back() == rm_motors_can::MotorType::GM6020 && id > 7)){
+      // Validate as signed before converting to uint: casting a negative id first
+      // would wrap it to a huge value, and the error message would log garbage.
+      int id_parsed = std::stoi(joint.parameters.at("motor_id"));
+      if (id_parsed < 1 || id_parsed > 8 || (motor_types_.back() == rm_motors_can::MotorType::GM6020 && id_parsed > 7)){
         RCLCPP_FATAL(rclcpp::get_logger("RmMotorsSystemHardware"),
-          "Joint '%s' motor_id out of range [1, %u]: %u", joint.name.c_str(),
-          motor_types_.back() == rm_motors_can::MotorType::GM6020 ? 7 : 8, id);
+          "Joint '%s' motor_id out of range [1, %u]: %d", joint.name.c_str(),
+          motor_types_.back() == rm_motors_can::MotorType::GM6020 ? 7 : 8, id_parsed);
         return hardware_interface::CallbackReturn::ERROR;
       }
+      uint id = static_cast<uint>(id_parsed);
       motor_ids_.emplace_back(id);
     }
     catch (const std::out_of_range& e){
