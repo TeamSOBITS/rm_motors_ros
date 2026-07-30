@@ -24,31 +24,33 @@ double RMVelocityPIDController::calculate_target_torque(
   // 2. Proportional Term (P)
   double p_term = kp_ * error;
 
-  // 3. Integral Term (I)
-  if (delta_time_s > 0.0) {
-    integral_error_ += error * delta_time_s;
-  }
-
-  // Anti-windup: Clamp the integral term based on maximum possible torque (I_max * Kt)
-  // Max I contribution: Max Torque / Ki
-  const double max_i_contribution = max_torque_nm_ / (ki_ > 0.0 ? ki_ : std::numeric_limits<double>::max());
-  integral_error_ = std::clamp(integral_error_, -max_i_contribution, max_i_contribution);
-  
-  double i_term = ki_ * integral_error_;
-
-  // 4. Derivative Term (D)
+  // 3. Derivative Term (D)
   double d_term = 0.0;
   if (delta_time_s > 0.0) {
     d_term = kd_ * (error - previous_error_) / delta_time_s;
   }
 
-  // 5. Calculate Total Output (Target Torque in Nm)
-  double output_torque_nm = p_term + i_term + d_term;
+  // 4. Integral Term (I): conditional anti-windup, only integrate if the output
+  // isn't already saturated in the error's direction (a plain clamp overshoots).
+  const double max_i_contribution = max_torque_nm_ / (ki_ > 0.0 ? ki_ : std::numeric_limits<double>::max());
+  double integral_candidate = integral_error_;
+  if (delta_time_s > 0.0) {
+    integral_candidate = std::clamp(
+      integral_error_ + error * delta_time_s, -max_i_contribution, max_i_contribution);
+  }
+  double output_torque_nm = p_term + ki_ * integral_candidate + d_term;
+  const bool saturated_further =
+    (output_torque_nm >  max_torque_nm_ && error > 0.0) ||
+    (output_torque_nm < -max_torque_nm_ && error < 0.0);
+  if (!saturated_further) {
+    integral_error_ = integral_candidate;
+  }
+  output_torque_nm = p_term + ki_ * integral_error_ + d_term;
 
-  // 6. Update state
+  // 5. Update state
   previous_error_ = error;
 
-  // 7. Clamp the final torque output to the motor's physical limit
+  // 6. Clamp the final torque output to the motor's physical limit
   output_torque_nm = std::clamp(output_torque_nm, -max_torque_nm_, max_torque_nm_);
 
   return output_torque_nm;
