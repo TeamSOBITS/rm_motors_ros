@@ -1,0 +1,4 @@
+# The e-stop cuts power to the USB-CAN adapter, destroying and re-creating can0
+# (unconfigured, tx_queue_len=10) on every cycle; without this, ros2_control
+# hits "No buffer space available" once the default 10-frame queue fills.
+SUBSYSTEM=="net", ACTION=="add", KERNEL=="can*", ATTR{tx_queue_len}="65536", RUN+="/bin/sh -c '/sbin/ip link set %k type can bitrate 1000000 && /sbin/ip link set %k up'"
