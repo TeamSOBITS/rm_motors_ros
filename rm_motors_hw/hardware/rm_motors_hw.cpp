@@ -92,6 +92,11 @@ hardware_interface::CallbackReturn RmMotorsSystemHardware::on_init(const hardwar
         "Joint '%s' missing required parameter: 'motor_id'", joint.name.c_str());
       return hardware_interface::CallbackReturn::ERROR;
     }
+    catch (const std::invalid_argument& e){
+      RCLCPP_FATAL(rclcpp::get_logger("RmMotorsSystemHardware"),
+        "Joint '%s' parameter 'motor_id' is not a number", joint.name.c_str());
+      return hardware_interface::CallbackReturn::ERROR;
+    }
 
     
 
@@ -137,6 +142,11 @@ hardware_interface::CallbackReturn RmMotorsSystemHardware::on_init(const hardwar
       RCLCPP_WARN(rclcpp::get_logger("RmMotorsSystemHardware"),
         "Joint '%s' missing parameter 'position_offset'. Assuming 0.0", joint.name.c_str());
       position_offsets_.emplace_back(0.0);
+    }
+    catch (const std::invalid_argument&){
+      RCLCPP_FATAL(rclcpp::get_logger("RmMotorsSystemHardware"),
+        "Joint '%s' parameter 'position_offset' is not a number", joint.name.c_str());
+      return hardware_interface::CallbackReturn::ERROR;
     }
 
     // Invert Rotation
@@ -199,6 +209,11 @@ hardware_interface::CallbackReturn RmMotorsSystemHardware::on_init(const hardwar
         RCLCPP_FATAL(rclcpp::get_logger("RmMotorsSystemHardware"),
           "Joint '%s' (%s in Velocity Mode) is missing required PID parameters (velocity_kp, velocity_ki, or velocity_kd).",
           joint.name.c_str(), joint.parameters.at("motor_type").c_str());
+        return hardware_interface::CallbackReturn::ERROR;
+      } catch (const std::invalid_argument&) {
+        RCLCPP_FATAL(rclcpp::get_logger("RmMotorsSystemHardware"),
+          "Joint '%s' has a non-numeric PID parameter (velocity_kp/velocity_ki/velocity_kd).",
+          joint.name.c_str());
         return hardware_interface::CallbackReturn::ERROR;
       }
     }
