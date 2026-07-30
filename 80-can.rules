@@ -1,4 +1,8 @@
 # The e-stop cuts power to the USB-CAN adapter, destroying and re-creating can0
 # (unconfigured, tx_queue_len=10) on every cycle; without this, ros2_control
 # hits "No buffer space available" once the default 10-frame queue fills.
+#
+# This is install.sh's Docker-container path; see README.md's "Hardware Setup"
+# section for the 80-can.link/80-can.network systemd-networkd alternative used
+# on bare-metal hosts. Don't run both on the same host.
 SUBSYSTEM=="net", ACTION=="add", KERNEL=="can*", ATTR{tx_queue_len}="65536", RUN+="/bin/sh -c '/sbin/ip link set %k type can bitrate 1000000 && /sbin/ip link set %k up'"
