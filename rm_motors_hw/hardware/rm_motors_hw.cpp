@@ -272,7 +272,12 @@ hardware_interface::CallbackReturn RmMotorsSystemHardware::on_configure(const rc
 hardware_interface::CallbackReturn RmMotorsSystemHardware::on_cleanup(const rclcpp_lifecycle::State & /*previous_state*/)
 {
   RCLCPP_INFO(rclcpp::get_logger("RmMotorsHardware"), "Cleaning up...");
-  // TODO: Add logic to release the CAN socket if necessary
+  if (!simulate_ && gmc_ != nullptr)
+  {
+    // Zero all motor commands and release the CAN socket (period 0 = no ramp)
+    rm_motors_can::cleanup(gmc_, 0);
+    gmc_ = nullptr;
+  }
   RCLCPP_INFO(rclcpp::get_logger("RmMotorsHardware"), "Cleaned up.");
   return hardware_interface::CallbackReturn::SUCCESS;
 }
@@ -326,7 +331,15 @@ hardware_interface::CallbackReturn RmMotorsSystemHardware::on_activate(const rcl
 hardware_interface::CallbackReturn RmMotorsSystemHardware::on_deactivate(const rclcpp_lifecycle::State & /*previous_state*/)
 {
   RCLCPP_INFO(rclcpp::get_logger("RmMotorsHardware"), "Deactivating hardware...");
-  // You might want to send a zero command to all motors here to safely stop them.
+  // DJI ESCs keep applying the last command, so send an explicit zero here.
+  if (!simulate_ && gmc_ != nullptr)
+  {
+    for (size_t i = 0; i < motor_ids_.size(); i++)
+    {
+      rm_motors_can::set_cmd(gmc_, motor_ids_[i], 0.0);
+    }
+    rm_motors_can::run_once(gmc_);
+  }
   RCLCPP_INFO(rclcpp::get_logger("RmMotorsHardware"), "Hardware deactivated.");
   return hardware_interface::CallbackReturn::SUCCESS;
 }

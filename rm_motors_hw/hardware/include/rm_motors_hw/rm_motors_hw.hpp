@@ -41,7 +41,7 @@ private:
   std::string can_interface_;
 
   bool simulate_;
-  rm_motors_can::RmMotorsCan *gmc_;
+  rm_motors_can::RmMotorsCan *gmc_{nullptr};
   std::vector<const char*> state_interface_types_ = {hardware_interface::HW_IF_POSITION, hardware_interface::HW_IF_VELOCITY, hardware_interface::HW_IF_EFFORT, "temperature"};
   std::vector<rm_motors_can::MotorType> motor_types_;
   std::vector<rm_motors_can::CmdMode> command_modes_;
