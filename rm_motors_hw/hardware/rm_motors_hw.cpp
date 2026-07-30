@@ -101,7 +101,7 @@ hardware_interface::CallbackReturn RmMotorsSystemHardware::on_init(const hardwar
         gear_ratios_[i] = 1.0;
         break;
       case rm_motors_can::MotorType::M3508:
-        gear_ratios_[i] = 19.0;
+        gear_ratios_[i] = 3591.0 / 187.0;  // exact M3508 ratio (~19.203), not 19.0
         break;
       case rm_motors_can::MotorType::M2006:
         gear_ratios_[i] = 36.0;
