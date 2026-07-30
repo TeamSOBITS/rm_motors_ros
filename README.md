@@ -4,7 +4,6 @@
 
 This is a `ros2_control` hardware interface wrapping the [`rm_motors_can`](https://github.com/mjforan/rm_motors_can) library, used to control DJI RoboMaster motors over the CAN bus.
 
-
 <table>
 <tr><td>
 
@@ -70,7 +69,15 @@ The `rm_motors_can` Rust library is built in the `rm_motors_ros` CMakeLists.txt.
 
 Out of the box the motor is configured with ID 0, which is invalid. Beware that GM6020 ID 1-4 cannot coexist with M3508/M2006 ID 5-8 due to overlapping CAN Bus addresses. Use the DIP switches to set the ID and enable the CAN termination resistor if necessary.
 
-This library requires a Linux SocketCAN interface. It was tested using a Raspberry Pi 5 and the [Waveshare CAN HAT](https://www.waveshare.com/wiki/2-CH_CAN_HAT). Quick start setup:
+This library requires a Linux SocketCAN interface. Two setup paths are provided — use one, not both:
+
+### USB CAN adapters — udev rule (used by install.sh)
+
+For hotpluggable `gs_usb`-style adapters (candleLight, CANable, USB2CAN), `install.sh` installs [80-can.rules](80-can.rules) into `/etc/udev/rules.d/`. The rule configures every `can*` interface the moment it enumerates (1 Mbps classic CAN, `txqueuelen 65536`, up), so the setup survives replugging — including robots where an emergency stop cuts the adapter's power and re-creates `can0` on every cycle. It also works from inside a Docker container when the host's `/etc/udev/rules.d` is bind-mounted, since udev runs on the host and no systemd is needed in the container.
+
+### Raspberry Pi CAN HAT — systemd-networkd
+
+Tested using a Raspberry Pi 5 and the [Waveshare CAN HAT](https://www.waveshare.com/wiki/2-CH_CAN_HAT). Quick start setup:
 
 ```
 sudo su
@@ -94,6 +101,12 @@ reboot now
 but running both programs introduces complications. For example, `systemd-timesyncd` will not work because the primary network is running through `NetworkManager`. Install `chrony` instead.
 
 `sudo apt install -y can-utils` adds useful commands such as `candump` and `cansend`.
+
+### Troubleshooting
+
+- **`No buffer space available (os error 105)` in `write()`** — no node on the bus is ACKing frames (motors unpowered, e-stop engaged, wiring/termination fault), or the interface still has the kernel-default 10-frame `txqueuelen`. Run `candump can0`: powered RM motors broadcast feedback at 1 kHz, so a silent bus means a power or wiring problem, not software.
+- **`Resource temporarily unavailable (os error 11)`** — writes exceeded the socket write timeout because the adapter stopped draining its TX queue (USB bandwidth contention, or an adapter-firmware lock-up seen on old `gs_usb` units). Confirm with `ip -s link show can0`: a frozen TX packet counter while RX keeps growing means the adapter TX path is wedged — unplug and replug it to recover.
+- **After an e-stop cycle or adapter replug, restart `ros2_control`** — the hardware interface cannot survive `can0` being destroyed and re-created underneath it, even though the udev rule brings the new interface up automatically.
 
 Connect the red wire to the "H" pin on CAN0, with the black wire going to the "L" pin. If these are the only two hosts on the CAN bus, set the HAT jumper and motor DIP switch to enable the CAN termination resistors. Power the motor with 24VDC 4A.
 
