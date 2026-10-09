@@ -32,6 +32,10 @@ Only one command interface may be designated for each motor. The interface type 
 | `joint/motor_id`        | true  | integer | Which motor to use for this joint       |
 | `joint/motor_type`      | true  | string  | {"gm6020", "m3508", "m2006"}            |
 | `joint/position_offset` | false | double  | Set the "zero" position of the motor    |
+| `joint/max_current`     | false | double  | Current ceiling in A, clamps PID/effort output (default: motor's rated max, must be in (0, rated max]) |
+| `joint/velocity_i_decay_tau` | false | double | Velocity PID: time constant (s) for decaying the integral when the target is ~0 (default: 0, disabled) |
+| `joint/velocity_lpf_hz`      | false | double | Velocity PID: low-pass cutoff (Hz) on the measured velocity (default: 0, disabled) |
+| `joint/velocity_i_limit`     | false | double | Velocity PID: explicit bound (N·m) on the integral contribution (default: 0, uses max torque) |
 
 These parameters are set in [rm_motors.ros2_control.xacro](rm_motors_example/urdf/rm_motors.ros2_control.xacro), not as regular ROS node parameters.
 

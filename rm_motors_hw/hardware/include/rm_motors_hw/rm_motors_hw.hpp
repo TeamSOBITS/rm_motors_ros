@@ -52,6 +52,7 @@ private:
   std::vector<double> position_offsets_;
   std::vector<double> gear_ratios_;
   std::vector<bool> invert_rotation_;
+  std::vector<double> max_current_amp_;  // per-joint current ceiling (defaults to the motor's rated max)
 
   std::map<uint, rm_motors_hw::RMVelocityPIDController> velocity_pid_controllers_;
 
