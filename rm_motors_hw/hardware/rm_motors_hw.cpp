@@ -196,20 +196,37 @@ hardware_interface::CallbackReturn RmMotorsSystemHardware::on_init(const hardwar
       }
     }
 
+    // Current Ceiling (defaults to the motor's rated max). Applies to both the
+    // velocity PID's output and effort-mode commands, so it's parsed unconditionally.
+    double max_current_amp = rm_motors_can::i_max(motor_types_.back());
+    try {
+      max_current_amp = std::stod(joint.parameters.at("max_current"));
+    } catch (const std::out_of_range&) {
+      // Not given: keep the motor's rated default.
+    } catch (const std::invalid_argument&) {
+      RCLCPP_FATAL(rclcpp::get_logger("RmMotorsSystemHardware"),
+        "Joint '%s' parameter 'max_current' is not a number", joint.name.c_str());
+      return hardware_interface::CallbackReturn::ERROR;
+    }
+    if (max_current_amp <= 0.0 || max_current_amp > rm_motors_can::i_max(motor_types_.back())) {
+      RCLCPP_FATAL(rclcpp::get_logger("RmMotorsSystemHardware"),
+        "Joint '%s' max_current out of range (0, %.3f]: %.3f", joint.name.c_str(),
+        rm_motors_can::i_max(motor_types_.back()), max_current_amp);
+      return hardware_interface::CallbackReturn::ERROR;
+    }
+    max_current_amp_.emplace_back(max_current_amp);
+    RCLCPP_INFO(rclcpp::get_logger("RmMotorsSystemHardware"),
+      "Joint '%s' current ceiling: %.2fA (motor rated max %.2fA)",
+      joint.name.c_str(), max_current_amp, rm_motors_can::i_max(motor_types_.back()));
+
     // PID Initialization for Velocity-Commanded Motors
     if (command_modes_.back() == rm_motors_can::CmdMode::Velocity)
     {
+      double kp, ki, kd;
       try {
-        double kp = std::stod(joint.parameters.at("velocity_kp"));
-        double ki = std::stod(joint.parameters.at("velocity_ki"));
-        double kd = std::stod(joint.parameters.at("velocity_kd"));
-
-        velocity_pid_controllers_.emplace(i, rm_motors_hw::RMVelocityPIDController(kp, ki, kd,
-          rm_motors_can::nm_per_a(motor_types_.back()),
-          rm_motors_can::i_max(motor_types_.back())));
-        RCLCPP_INFO(rclcpp::get_logger("RmMotorsSystemHardware"),
-          "Joint '%s' (ID: %u, Index: %zu) initialized for Velocity PID Control",
-          joint.name.c_str(), motor_ids_.back(), i);
+        kp = std::stod(joint.parameters.at("velocity_kp"));
+        ki = std::stod(joint.parameters.at("velocity_ki"));
+        kd = std::stod(joint.parameters.at("velocity_kd"));
       } catch (const std::out_of_range&) {
         RCLCPP_FATAL(rclcpp::get_logger("RmMotorsSystemHardware"),
           "Joint '%s' (%s in Velocity Mode) is missing required PID parameters (velocity_kp, velocity_ki, or velocity_kd).",
@@ -221,6 +238,43 @@ hardware_interface::CallbackReturn RmMotorsSystemHardware::on_init(const hardwar
           joint.name.c_str());
         return hardware_interface::CallbackReturn::ERROR;
       }
+
+      // Optional low-speed/noise tuning; each defaults to reproducing the original PID.
+      rm_motors_hw::RMVelocityPIDController::Config pid_config;
+      try {
+        pid_config.i_decay_tau_s = std::stod(joint.parameters.at("velocity_i_decay_tau"));
+      } catch (const std::out_of_range&) {
+        // Not given: zero-target integral bleed stays disabled.
+      } catch (const std::invalid_argument&) {
+        RCLCPP_FATAL(rclcpp::get_logger("RmMotorsSystemHardware"),
+          "Joint '%s' parameter 'velocity_i_decay_tau' is not a number", joint.name.c_str());
+        return hardware_interface::CallbackReturn::ERROR;
+      }
+      try {
+        pid_config.vel_lpf_hz = std::stod(joint.parameters.at("velocity_lpf_hz"));
+      } catch (const std::out_of_range&) {
+        // Not given: velocity low-pass filter stays disabled.
+      } catch (const std::invalid_argument&) {
+        RCLCPP_FATAL(rclcpp::get_logger("RmMotorsSystemHardware"),
+          "Joint '%s' parameter 'velocity_lpf_hz' is not a number", joint.name.c_str());
+        return hardware_interface::CallbackReturn::ERROR;
+      }
+      try {
+        pid_config.i_limit_nm = std::stod(joint.parameters.at("velocity_i_limit"));
+      } catch (const std::out_of_range&) {
+        // Not given: integral stays bounded by max torque.
+      } catch (const std::invalid_argument&) {
+        RCLCPP_FATAL(rclcpp::get_logger("RmMotorsSystemHardware"),
+          "Joint '%s' parameter 'velocity_i_limit' is not a number", joint.name.c_str());
+        return hardware_interface::CallbackReturn::ERROR;
+      }
+
+      velocity_pid_controllers_.emplace(i, rm_motors_hw::RMVelocityPIDController(kp, ki, kd,
+        rm_motors_can::nm_per_a(motor_types_.back()), max_current_amp, pid_config));
+      RCLCPP_INFO(rclcpp::get_logger("RmMotorsSystemHardware"),
+        "Joint '%s' (ID: %u, Index: %zu) Velocity PID: kp=%.3f ki=%.3f kd=%.3f i_decay_tau=%.3fs vel_lpf=%.1fHz i_limit=%.3fNm max_current=%.2fA",
+        joint.name.c_str(), motor_ids_.back(), i, kp, ki, kd,
+        pid_config.i_decay_tau_s, pid_config.vel_lpf_hz, pid_config.i_limit_nm, max_current_amp);
     }
     i++;
   }
@@ -508,8 +562,10 @@ hardware_interface::return_type RmMotorsSystemHardware::write(
     }
     else if (command_modes_[i] == rm_motors_can::CmdMode::Torque)
     {
-      // Effort Mode: Command is already in torque (Nm)
+      // Effort Mode: Command is already in torque (Nm), but still enforce max_current
       raw_command = invert_rotation_[i] ? -hw_commands_[i] : hw_commands_[i];
+      double max_torque = rm_motors_can::nm_per_a(motor_types_[i]) * max_current_amp_[i];
+      raw_command = std::clamp(raw_command, -max_torque, max_torque);
     }
 
     if (!simulate_)
